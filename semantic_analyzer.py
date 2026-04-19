@@ -310,7 +310,7 @@ class SemanticAnalyzer:
         self._expect_keyword("if")
         cond = self._parse_cond()
         if cond is not None:
-            self._register_condition_identifiers(cond)
+            self._infer_condition_type(cond)
         self._expect_delimiter(":")
 
         self.symbols.push_scope()
@@ -368,6 +368,83 @@ class SemanticAnalyzer:
             return symbol.type_name
         return "Unknown"
 
+    def _infer_condition_type(self, node: AstNode) -> str:
+        if isinstance(node, CompareNode):
+            left_type = self._infer_expr_type(node.left)
+            right_type = self._infer_expr_type(node.right)
+            if left_type == "Unknown" or right_type == "Unknown":
+                return "Unknown"
+            if left_type != "Int" or right_type != "Int":
+                self.errors.append(
+                    SemanticErrorRecord(
+                        fragment=node.operator,
+                        line=self._node_line(node.left),
+                        col=self._node_col(node.left),
+                        message=self._m(
+                            f'Оператор "{node.operator}" применим только к целым значениям',
+                            f'Operator "{node.operator}" expects integer operands',
+                        ),
+                    )
+                )
+                return "Unknown"
+            return "Bool"
+
+        if isinstance(node, LogicalBinaryNode):
+            left_type = self._infer_condition_type(node.left)
+            right_type = self._infer_condition_type(node.right)
+            if left_type != "Bool":
+                self._add_condition_type_error(node.left, node.operator)
+            if right_type != "Bool":
+                self._add_condition_type_error(node.right, node.operator)
+            return "Bool"
+
+        if isinstance(node, NotNode):
+            operand_type = self._infer_condition_type(node.operand)
+            if operand_type != "Bool":
+                self._add_condition_type_error(node.operand, "not")
+            return "Bool"
+
+        inferred = self._infer_expr_type(node)
+        if inferred != "Unknown":
+            self.errors.append(
+                SemanticErrorRecord(
+                    fragment=self._node_fragment(node),
+                    line=self._node_line(node),
+                    col=self._node_col(node),
+                    message=self._m(
+                        "Условие должно быть логическим выражением",
+                        "Condition must be a boolean expression",
+                    ),
+                )
+            )
+        return "Unknown"
+
+    def _node_line(self, node: AstNode) -> int:
+        return getattr(node, "line", 1)
+
+    def _node_col(self, node: AstNode) -> int:
+        return getattr(node, "col", 1)
+
+    def _node_fragment(self, node: AstNode) -> str:
+        if isinstance(node, IdentifierNode):
+            return node.name
+        if isinstance(node, IntLiteralNode):
+            return str(node.value)
+        return node.label()
+
+    def _add_condition_type_error(self, node: AstNode, operator: str):
+        self.errors.append(
+            SemanticErrorRecord(
+                fragment=self._node_fragment(node),
+                line=self._node_line(node),
+                col=self._node_col(node),
+                message=self._m(
+                    f'Оператор "{operator}" требует логический операнд',
+                    f'Operator "{operator}" expects boolean operand',
+                ),
+            )
+        )
+
     def _check_assignment_semantics(self, assign: Optional[AssignNode]):
         if assign is None:
             return
@@ -399,24 +476,6 @@ class SemanticAnalyzer:
                     ),
                 )
             )
-
-    def _register_condition_identifiers(self, node: AstNode):
-        if isinstance(node, CompareNode):
-            self._declare_if_identifier(node.left)
-            self._declare_if_identifier(node.right)
-            return
-        if isinstance(node, LogicalBinaryNode):
-            self._register_condition_identifiers(node.left)
-            self._register_condition_identifiers(node.right)
-            return
-        if isinstance(node, NotNode):
-            self._register_condition_identifiers(node.operand)
-
-    def _declare_if_identifier(self, node: AstNode):
-        if not isinstance(node, IdentifierNode):
-            return
-        if self.symbols.lookup(node.name) is None:
-            self.symbols.declare(SymbolInfo(name=node.name, type_name="Int", line=node.line, col=node.col))
 
     def analyze(self) -> SemanticAnalysisResult:
         self.i = 0
