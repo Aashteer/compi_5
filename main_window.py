@@ -9,6 +9,8 @@ from editor_tab import EditorTab
 from result_tabs import ResultTab, SyntaxErrorResultTab
 from scanner import Scanner
 from parser import Parser
+from semantic_analyzer import SemanticAnalyzer
+from ast_viewer import AstGraphDialog
 
 
 class TextEditor(QMainWindow):
@@ -20,6 +22,7 @@ class TextEditor(QMainWindow):
         self.current_font_size = 11
         self.result_font_size = 10
         self.scanner = Scanner()
+        self.last_semantic_result = None
         
         self.initUI()
         self.retranslateUi()
@@ -276,6 +279,10 @@ class TextEditor(QMainWindow):
         run_act.setShortcut('F5')
         run_act.triggered.connect(self.start_analyzer)
         run_menu.addAction(run_act)
+        show_ast_act = QAction('Показать AST', self)
+        show_ast_act.setShortcut('F6')
+        show_ast_act.triggered.connect(self.show_ast_graph)
+        run_menu.addAction(show_ast_act)
 
         help_menu = menubar.addMenu(self.tr('Справка'))
         help_act = QAction(self.tr('Вызов справки'), self)
@@ -340,6 +347,21 @@ class TextEditor(QMainWindow):
                 painter.drawText(11, 18, 'i')
                 painter.end()
                 return QIcon(pixmap)
+            elif name == 'ast-tree':
+                pixmap = QPixmap(24, 24)
+                pixmap.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(pixmap)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                painter.setPen(QPen(QColor(120, 220, 170), 2))
+                painter.drawLine(12, 3, 12, 11)
+                painter.drawLine(12, 11, 5, 18)
+                painter.drawLine(12, 11, 19, 18)
+                painter.setBrush(QColor(120, 220, 170))
+                painter.drawEllipse(10, 1, 4, 4)
+                painter.drawEllipse(3, 16, 4, 4)
+                painter.drawEllipse(17, 16, 4, 4)
+                painter.end()
+                return QIcon(pixmap)
             else:
                 return QIcon.fromTheme(name)
 
@@ -356,6 +378,7 @@ class TextEditor(QMainWindow):
             ('edit-paste', self.tr('Вставить текст из буфера'), lambda: self.get_current_editor().code_editor.paste() if self.get_current_editor() else None),
             None,
             ('system-run', self.tr('Запустить анализатор'), self.start_analyzer),
+            ('ast-tree', 'Показать AST', self.show_ast_graph),
             ('help-contents', self.tr('Показать справку'), self.show_help),
             ('help-about', self.tr('О программе'), self.show_about),
         ]
@@ -501,7 +524,7 @@ class TextEditor(QMainWindow):
             'Грамматика': 'Используется контекстно-свободная грамматика для описания конструкций if-else.',
             'Классификация грамматики': 'Грамматика относится к классу LL(1).',
             'Метод анализа': 'Используется метод конечных автоматов для лексического анализа.',
-            'Тестовый пример': 'if a > b:\n    max = a\nelse:\n    max = b;',
+            'Тестовый пример': 'if a > b:\n    max = a;\nelse:\n    max = b;',
             'Список литературы': '1. Ахо А., Сети Р., Ульман Дж. Компиляторы: принципы, технологии и инструменты.\n2. Можгинский А.Ю. Лексический анализ.',
             'Исходный код программы': 'Исходный код: main.py, main_window.py, translator.py, editor_tab.py, result_tabs.py, scanner.py, parser.py'
         }
@@ -536,6 +559,7 @@ class TextEditor(QMainWindow):
             
             if not text.strip():
                 self.result_text.setPlainText(self.tr('Текст для анализа отсутствует.'))
+                self.last_semantic_result = None
                 return
             
             results = self.scanner.analyze(text)
@@ -584,10 +608,25 @@ class TextEditor(QMainWindow):
                 self.error_table_tab.add_result(*error.to_table_row(current_lang))
 
             parse_result = Parser(results['tokens'], lang=current_lang).parse()
-            for err in parse_result.errors:
-                loc = err.location_ru() if current_lang == 'ru' else err.location_en()
-                self.syntax_error_tab.add_row(err.fragment, loc, err.message)
-            self.syntax_error_tab.set_total(len(parse_result.errors))
+            semantic_errors_count = 0
+            semantic_ast_text = ""
+            self.last_semantic_result = None
+
+            if parse_result.ok:
+                semantic_result = SemanticAnalyzer(results['tokens'], lang=current_lang).analyze()
+                semantic_errors_count = len(semantic_result.errors)
+                semantic_ast_text = semantic_result.ast_text
+                self.last_semantic_result = semantic_result
+
+                for err in semantic_result.errors:
+                    loc = err.location_ru() if current_lang == 'ru' else err.location_en()
+                    self.syntax_error_tab.add_row(err.fragment, loc, err.message)
+                self.syntax_error_tab.set_total(semantic_errors_count)
+            else:
+                for err in parse_result.errors:
+                    loc = err.location_ru() if current_lang == 'ru' else err.location_en()
+                    self.syntax_error_tab.add_row(err.fragment, loc, err.message)
+                self.syntax_error_tab.set_total(len(parse_result.errors))
 
             syn_block = '\n\n' + self.tr('Синтаксический анализ (вывод)') + '\n'
             if parse_result.ok:
@@ -596,11 +635,31 @@ class TextEditor(QMainWindow):
                 syn_block += self.tr('Найдено синтаксических ошибок:') + f' {len(parse_result.errors)}'
             self.result_text.append(syn_block)
 
+            if parse_result.ok:
+                if current_lang == 'ru':
+                    self.result_text.append('\n\nAST:\n' + semantic_ast_text)
+                    self.result_text.append(f'\nСемантических ошибок: {semantic_errors_count}')
+                else:
+                    self.result_text.append('\n\nAST:\n' + semantic_ast_text)
+                    self.result_text.append(f'\nSemantic errors: {semantic_errors_count}')
+
             self.status_bar.showMessage(
                 f"{self.tr('Анализ завершен')}. {self.tr('Лексем:')} {len(results['tokens'])}, "
                 f"{self.tr('Ошибок:')} {len(results['errors'])}, "
                 f"{self.tr('Найдено синтаксических ошибок:')} {len(parse_result.errors)}"
             )
+
+    def show_ast_graph(self):
+        if self.last_semantic_result is None or self.last_semantic_result.ast_root is None:
+            QMessageBox.information(
+                self,
+                'AST',
+                'Сначала запустите анализатор (F5) на корректной строке без синтаксических ошибок.',
+            )
+            return
+
+        dialog = AstGraphDialog(self.last_semantic_result.ast_root, self)
+        dialog.exec()
                 
     
     def show_help(self):
