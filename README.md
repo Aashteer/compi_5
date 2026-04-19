@@ -175,9 +175,8 @@ else:
 
 ### Скриншоты работы
 
-Примеры:
 
-![Примеры](screenshots/11.png)
+![Примеры](screenshot/11.png)
 
-![Примеры](screenshots/12.png)
+![Примеры](screenshot/12.png)
 
