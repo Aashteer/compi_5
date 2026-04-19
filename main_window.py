@@ -7,10 +7,12 @@ from PyQt6.QtGui import *
 from translator import Translator
 from editor_tab import EditorTab
 from result_tabs import ResultTab, SyntaxErrorResultTab
-from scanner import Scanner
-from parser import Parser
-from semantic_analyzer import SemanticAnalyzer
-from ast_viewer import AstGraphDialog
+from lab6_expression_analyzer import (
+    Lexer as ExprLexer,
+    RecursiveDescentParser,
+    to_postfix,
+    eval_postfix,
+)
 
 
 class TextEditor(QMainWindow):
@@ -21,8 +23,7 @@ class TextEditor(QMainWindow):
         
         self.current_font_size = 11
         self.result_font_size = 10
-        self.scanner = Scanner()
-        self.last_semantic_result = None
+        self.expr_lexer = ExprLexer()
         
         self.initUI()
         self.retranslateUi()
@@ -51,11 +52,27 @@ class TextEditor(QMainWindow):
         
         self.syntax_error_tab = SyntaxErrorResultTab(self.tr)
         self.syntax_error_tab.set_main_window(self)
+
+        self.quad_tab = QWidget()
+        quad_layout = QVBoxLayout(self.quad_tab)
+        self.quad_text = QTextEdit()
+        self.quad_text.setReadOnly(True)
+        self.quad_text.setStyleSheet("QTextEdit { background-color: #1e1e1e; color: #ffffff; border: 1px solid #555555; }")
+        quad_layout.addWidget(self.quad_text)
+
+        self.poliz_tab = QWidget()
+        poliz_layout = QVBoxLayout(self.poliz_tab)
+        self.poliz_text = QTextEdit()
+        self.poliz_text.setReadOnly(True)
+        self.poliz_text.setStyleSheet("QTextEdit { background-color: #1e1e1e; color: #ffffff; border: 1px solid #555555; }")
+        poliz_layout.addWidget(self.poliz_text)
         
         self.result_tabs.addTab(self.text_result_tab, self.tr("Текстовый ввод"))
         self.result_tabs.addTab(self.tokens_tab, self.tr("Лексемы"))
         self.result_tabs.addTab(self.error_table_tab, self.tr("Ошибки"))
         self.result_tabs.addTab(self.syntax_error_tab, self.tr("Синтаксис"))
+        self.result_tabs.addTab(self.quad_tab, self.tr("Тетрады"))
+        self.result_tabs.addTab(self.poliz_tab, self.tr("ПОЛИЗ"))
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self.editor_tabs)
@@ -281,7 +298,13 @@ class TextEditor(QMainWindow):
         run_menu.addAction(run_act)
         show_ast_act = QAction('Показать AST', self)
         show_ast_act.setShortcut('F6')
-        show_ast_act.triggered.connect(self.show_ast_graph)
+        show_ast_act.triggered.connect(
+            lambda: QMessageBox.information(
+                self,
+                "AST",
+                "Для лабораторной 6 отображаются тетрады и ПОЛИЗ. AST относится к предыдущей работе.",
+            )
+        )
         run_menu.addAction(show_ast_act)
 
         help_menu = menubar.addMenu(self.tr('Справка'))
@@ -378,7 +401,15 @@ class TextEditor(QMainWindow):
             ('edit-paste', self.tr('Вставить текст из буфера'), lambda: self.get_current_editor().code_editor.paste() if self.get_current_editor() else None),
             None,
             ('system-run', self.tr('Запустить анализатор'), self.start_analyzer),
-            ('ast-tree', 'Показать AST', self.show_ast_graph),
+            (
+                'ast-tree',
+                'Показать AST',
+                lambda: QMessageBox.information(
+                    self,
+                    "AST",
+                    "Для лабораторной 6 отображаются тетрады и ПОЛИЗ. AST относится к предыдущей работе.",
+                ),
+            ),
             ('help-contents', self.tr('Показать справку'), self.show_help),
             ('help-about', self.tr('О программе'), self.show_about),
         ]
@@ -405,6 +436,8 @@ class TextEditor(QMainWindow):
         self.result_tabs.setTabText(1, self.tr("Лексемы"))
         self.result_tabs.setTabText(2, self.tr("Ошибки"))
         self.result_tabs.setTabText(3, self.tr("Синтаксис"))
+        self.result_tabs.setTabText(4, self.tr("Тетрады"))
+        self.result_tabs.setTabText(5, self.tr("ПОЛИЗ"))
         
         self.tokens_tab.table.setHorizontalHeaderLabels([
             self.tr('Условный код'), 
@@ -520,13 +553,13 @@ class TextEditor(QMainWindow):
     
     def show_text_info(self, text_type):
         info_texts = {
-            'Постановка задачи': 'Разработать лексический анализатор для условного оператора if-else языка Python.',
-            'Грамматика': 'Используется контекстно-свободная грамматика для описания конструкций if-else.',
+            'Постановка задачи': 'Реализовать лексер и синтаксический анализатор рекурсивного спуска для арифметических выражений, а также построение тетрад и ПОЛИЗ.',
+            'Грамматика': 'E -> T A; A -> eps | + T A | - T A; T -> F B; B -> eps | * F B | / F B | // F B | % F B | ** F B; F -> num | id | (E).',
             'Классификация грамматики': 'Грамматика относится к классу LL(1).',
-            'Метод анализа': 'Используется метод конечных автоматов для лексического анализа.',
-            'Тестовый пример': 'if a > b:\n    max = a;\nelse:\n    max = b;',
+            'Метод анализа': 'Используется метод рекурсивного спуска для синтаксического анализа и алгоритм Дейкстры для ПОЛИЗ.',
+            'Тестовый пример': '2 + 3 * (4 - 1)',
             'Список литературы': '1. Ахо А., Сети Р., Ульман Дж. Компиляторы: принципы, технологии и инструменты.\n2. Можгинский А.Ю. Лексический анализ.',
-            'Исходный код программы': 'Исходный код: main.py, main_window.py, translator.py, editor_tab.py, result_tabs.py, scanner.py, parser.py'
+            'Исходный код программы': 'Исходный код: main.py, main_window.py, lab6_expression_analyzer.py, translator.py, editor_tab.py, result_tabs.py'
         }
         QMessageBox.information(self, self.tr(text_type), info_texts[text_type])
     
@@ -556,113 +589,109 @@ class TextEditor(QMainWindow):
             self.tokens_tab.clear_results()
             self.error_table_tab.clear_results()
             self.syntax_error_tab.clear_results()
+            self.quad_text.clear()
+            self.poliz_text.clear()
             
             if not text.strip():
                 self.result_text.setPlainText(self.tr('Текст для анализа отсутствует.'))
-                self.last_semantic_result = None
                 return
-            
-            results = self.scanner.analyze(text)
-            
+
+            tokens, lex_errors = self.expr_lexer.tokenize(text)
             current_lang = self.translator.lang
-            
+            type_map = {
+                "NUM": ("ЦЕЛОЕ_ЧИСЛО", "INTEGER"),
+                "ID": ("ИДЕНТИФИКАТОР", "IDENTIFIER"),
+                "OP": ("ОПЕРАТОР", "OPERATOR"),
+                "LPAREN": ("СКОБКА", "PAREN"),
+                "RPAREN": ("СКОБКА", "PAREN"),
+                "ERROR": ("ОШИБКА", "ERROR"),
+            }
+            code_map = {"NUM": 1, "ID": 2, "OP": 10, "LPAREN": 11, "RPAREN": 11, "ERROR": 99}
+
+            token_count = len([t for t in tokens if t.kind != "EOF"])
             tokens_text = f"{self.tr('Результаты лексического анализа')}\n\n"
-            
-            tokens_text += f"{self.tr('Найдено лексем:')} {len(results['tokens'])}\n"
-            tokens_text += f"{self.tr('Найдено ошибок:')} {len(results['errors'])}\n\n"
-            
-            if results['tokens']:
-                if current_lang == 'ru':
-                    tokens_text += f"{self.tr('Список лексем:')}\n"
-                else:
-                    tokens_text += f"Token list:\n"
-                tokens_text += "-" * 70 + "\n"
-                for token in results['tokens']:
-                    if token.token_type != 'ERROR':
-                        display_type = token.get_display_type(current_lang)
-                        display_value = token.get_display_value(current_lang)
-                        if current_lang == 'ru':
-                            location = f"строка {token.line:2d}, {token.start:2d}-{token.end:2d}"
-                        else:
-                            location = f"line {token.line:2d}, {token.start:2d}-{token.end:2d}"
-                        tokens_text += f"{token.code:3d} | {display_type:20} | '{display_value:10}' | {location}\n"
-            
-            if results['errors']:
-                if current_lang == 'ru':
-                    tokens_text += f"\n{self.tr('Список ошибок:')}\n"
-                else:
-                    tokens_text += f"\nError list:\n"
-                tokens_text += "-" * 70 + "\n"
-                for error in results['errors']:
-                    if current_lang == 'ru':
-                        tokens_text += f"{self.tr('Строка')} {error.line:2d}, {self.tr('Позиция')} {error.start:2d}: {error.value}\n"
-                    else:
-                        tokens_text += f"Line {error.line:2d}, Position {error.start:2d}: {error.value}\n"
-            
-            self.result_text.setPlainText(tokens_text)
-            
-            for token in results['tokens']:
-                self.tokens_tab.add_result(*token.to_table_row(current_lang))
-            
-            for error in results['errors']:
-                self.error_table_tab.add_result(*error.to_table_row(current_lang))
+            tokens_text += f"{self.tr('Найдено лексем:')} {token_count}\n"
+            tokens_text += f"{self.tr('Найдено ошибок:')} {len(lex_errors)}\n\n"
+            tokens_text += "Грамматика лабы 6: E->TA; A->eps|+TA|-TA; T->FB; B->eps|*FB|/FB|//FB|%FB|**FB; F->num|id|(E)\n"
 
-            parse_result = Parser(results['tokens'], lang=current_lang).parse()
-            semantic_result = SemanticAnalyzer(results['tokens'], lang=current_lang).analyze()
-            semantic_errors_count = len(semantic_result.errors)
-            semantic_ast_text = semantic_result.ast_text
-            self.last_semantic_result = semantic_result
+            for token in tokens:
+                if token.kind == "EOF":
+                    continue
+                code = code_map.get(token.kind, 99)
+                kind_ru, kind_en = type_map.get(token.kind, (token.kind, token.kind))
+                kind_name = kind_ru if current_lang == "ru" else kind_en
+                start = token.pos + 1
+                end = token.pos + len(token.value)
+                location = f"строка 1, {start}-{end}" if current_lang == "ru" else f"line 1, {start}-{end}"
+                self.tokens_tab.add_result(code, kind_name, token.value, location)
 
-            # Для варианта с декларациями (`const val ...`) семантический анализатор
-            # является источником ошибок даже если старый синтаксический парсер (if/else) не подходит.
-            semantic_driven = (
-                semantic_result.ast_root is not None
-                and semantic_result.ast_root.__class__.__name__ == "ProgramNode"
-            )
+            for err in lex_errors:
+                start = err.pos + 1
+                loc = f"строка 1, {start}-{start}" if current_lang == "ru" else f"line 1, {start}-{start}"
+                self.error_table_tab.add_result(99, "ОШИБКА" if current_lang == "ru" else "ERROR", err.message, loc)
 
-            if parse_result.ok or semantic_driven:
-                for err in semantic_result.errors:
-                    loc = err.location_ru() if current_lang == 'ru' else err.location_en()
-                    self.syntax_error_tab.add_row(err.fragment, loc, err.message)
-                self.syntax_error_tab.set_total(semantic_errors_count)
+            if lex_errors:
+                for err in lex_errors:
+                    loc = f"строка 1, позиция {err.pos + 1}" if current_lang == "ru" else f"line 1, position {err.pos + 1}"
+                    self.syntax_error_tab.add_row("LEX", loc, err.message)
+                self.syntax_error_tab.set_total(len(lex_errors))
+                self.result_text.setPlainText(tokens_text + "\n\nЕсть лексические ошибки. Построение тетрад и ПОЛИЗ остановлено.")
+                self.quad_text.setPlainText("Тетрады не строятся при лексических ошибках.")
+                self.poliz_text.setPlainText("ПОЛИЗ не строится при лексических ошибках.")
+                self.status_bar.showMessage(
+                    f"{self.tr('Анализ завершен')}. {self.tr('Лексем:')} {token_count}, "
+                    f"{self.tr('Ошибок:')} {len(lex_errors)}, "
+                    f"{self.tr('Найдено синтаксических ошибок:')} 0"
+                )
+                return
+
+            parser = RecursiveDescentParser(tokens)
+            parser.parse()
+            parse_errors = parser.errors
+            for err in parse_errors:
+                loc = f"строка 1, позиция {err.pos + 1}" if current_lang == "ru" else f"line 1, position {err.pos + 1}"
+                self.syntax_error_tab.add_row("SYN", loc, err.message)
+            self.syntax_error_tab.set_total(len(parse_errors))
+
+            syn_block = "\n\n" + self.tr("Синтаксический анализ (вывод)") + "\n"
+            if parse_errors:
+                syn_block += f"{self.tr('Найдено синтаксических ошибок:')} {len(parse_errors)}"
+                self.quad_text.setPlainText("Тетрады не строятся при синтаксических ошибках.")
+                self.poliz_text.setPlainText("ПОЛИЗ не строится при синтаксических ошибках.")
+                self.result_text.setPlainText(tokens_text + syn_block)
+                self.status_bar.showMessage(
+                    f"{self.tr('Анализ завершен')}. {self.tr('Лексем:')} {token_count}, "
+                    f"{self.tr('Ошибок:')} {len(lex_errors)}, "
+                    f"{self.tr('Найдено синтаксических ошибок:')} {len(parse_errors)}"
+                )
+                return
+
+            syn_block += self.tr("Синтаксических ошибок не обнаружено.")
+            self.result_text.setPlainText(tokens_text + syn_block)
+
+            quads_lines = ["N   op   arg1       arg2       result"]
+            for idx, (op, arg1, arg2, res) in enumerate(parser.quads, 1):
+                quads_lines.append(f"{idx:<3} {op:<4} {arg1:<10} {arg2:<10} {res:<8}")
+            if len(quads_lines) == 1:
+                quads_lines.append("Операций нет (одно значение без операторов).")
+            self.quad_text.setPlainText("\n".join(quads_lines))
+
+            only_int_expr = all(t.kind in {"NUM", "OP", "LPAREN", "RPAREN", "EOF"} for t in tokens)
+            if not only_int_expr:
+                self.poliz_text.setPlainText("ПОЛИЗ строится только для выражений, состоящих из целых чисел.")
             else:
-                for err in parse_result.errors:
-                    loc = err.location_ru() if current_lang == 'ru' else err.location_en()
-                    self.syntax_error_tab.add_row(err.fragment, loc, err.message)
-                self.syntax_error_tab.set_total(len(parse_result.errors))
-
-            syn_block = '\n\n' + self.tr('Синтаксический анализ (вывод)') + '\n'
-            if parse_result.ok:
-                syn_block += self.tr('Синтаксических ошибок не обнаружено.')
-            else:
-                syn_block += self.tr('Найдено синтаксических ошибок:') + f' {len(parse_result.errors)}'
-            self.result_text.append(syn_block)
-
-            if parse_result.ok or semantic_driven:
-                if current_lang == 'ru':
-                    self.result_text.append('\n\nAST:\n' + semantic_ast_text)
-                    self.result_text.append(f'\nСемантических ошибок: {semantic_errors_count}')
-                else:
-                    self.result_text.append('\n\nAST:\n' + semantic_ast_text)
-                    self.result_text.append(f'\nSemantic errors: {semantic_errors_count}')
+                try:
+                    postfix = to_postfix(tokens)
+                    value = eval_postfix(postfix)
+                    self.poliz_text.setPlainText(f"ПОЛИЗ: {' '.join(postfix)}\nЗначение: {value}")
+                except Exception as ex:
+                    self.poliz_text.setPlainText(f"Ошибка построения/вычисления ПОЛИЗ: {ex}")
 
             self.status_bar.showMessage(
-                f"{self.tr('Анализ завершен')}. {self.tr('Лексем:')} {len(results['tokens'])}, "
-                f"{self.tr('Ошибок:')} {len(results['errors'])}, "
-                f"{self.tr('Найдено синтаксических ошибок:')} {len(parse_result.errors)}"
+                f"{self.tr('Анализ завершен')}. {self.tr('Лексем:')} {token_count}, "
+                f"{self.tr('Ошибок:')} {len(lex_errors)}, "
+                f"{self.tr('Найдено синтаксических ошибок:')} {len(parse_errors)}"
             )
-
-    def show_ast_graph(self):
-        if self.last_semantic_result is None or self.last_semantic_result.ast_root is None:
-            QMessageBox.information(
-                self,
-                'AST',
-                'Сначала запустите анализатор (F5) на корректной строке без синтаксических ошибок.',
-            )
-            return
-
-        dialog = AstGraphDialog(self.last_semantic_result.ast_root, self)
-        dialog.exec()
                 
     
     def show_help(self):
