@@ -180,3 +180,8 @@ else:
 
 ![Примеры](screenshot/12.png)
 
+![Примеры](screenshot/13.png)
+
+![Примеры](screenshot/14.png)
+
+![Примеры](screenshot/15.png)

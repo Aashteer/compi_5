@@ -608,16 +608,19 @@ class TextEditor(QMainWindow):
                 self.error_table_tab.add_result(*error.to_table_row(current_lang))
 
             parse_result = Parser(results['tokens'], lang=current_lang).parse()
-            semantic_errors_count = 0
-            semantic_ast_text = ""
-            self.last_semantic_result = None
+            semantic_result = SemanticAnalyzer(results['tokens'], lang=current_lang).analyze()
+            semantic_errors_count = len(semantic_result.errors)
+            semantic_ast_text = semantic_result.ast_text
+            self.last_semantic_result = semantic_result
 
-            if parse_result.ok:
-                semantic_result = SemanticAnalyzer(results['tokens'], lang=current_lang).analyze()
-                semantic_errors_count = len(semantic_result.errors)
-                semantic_ast_text = semantic_result.ast_text
-                self.last_semantic_result = semantic_result
+            # Для варианта с декларациями (`const val ...`) семантический анализатор
+            # является источником ошибок даже если старый синтаксический парсер (if/else) не подходит.
+            semantic_driven = (
+                semantic_result.ast_root is not None
+                and semantic_result.ast_root.__class__.__name__ == "ProgramNode"
+            )
 
+            if parse_result.ok or semantic_driven:
                 for err in semantic_result.errors:
                     loc = err.location_ru() if current_lang == 'ru' else err.location_en()
                     self.syntax_error_tab.add_row(err.fragment, loc, err.message)
@@ -635,7 +638,7 @@ class TextEditor(QMainWindow):
                 syn_block += self.tr('Найдено синтаксических ошибок:') + f' {len(parse_result.errors)}'
             self.result_text.append(syn_block)
 
-            if parse_result.ok:
+            if parse_result.ok or semantic_driven:
                 if current_lang == 'ru':
                     self.result_text.append('\n\nAST:\n' + semantic_ast_text)
                     self.result_text.append(f'\nСемантических ошибок: {semantic_errors_count}')

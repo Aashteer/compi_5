@@ -65,6 +65,27 @@ class IntLiteralNode(AstNode):
 
 
 @dataclass
+class BoolLiteralNode(AstNode):
+    value: bool
+    line: int
+    col: int
+
+    def attributes(self) -> List[str]:
+        return [f"value: {self.value}"]
+
+
+@dataclass
+class TypeNode(AstNode):
+    name: str
+
+    def label(self) -> str:
+        return f"{self.name}Node"
+
+    def attributes(self) -> List[str]:
+        return [f'name: "{self.name}"']
+
+
+@dataclass
 class CompareNode(AstNode):
     operator: str
     left: AstNode
@@ -121,6 +142,30 @@ class IfNode(AstNode):
 
 
 @dataclass
+class ConstDeclNode(AstNode):
+    name: str
+    modifiers: List[str]
+    type_node: TypeNode
+    value: AstNode
+    line: int
+    col: int
+
+    def attributes(self) -> List[str]:
+        return [f'name: "{self.name}"', f"modifiers: {self.modifiers}"]
+
+    def children(self) -> List[AstNode]:
+        return [self.type_node, self.value]
+
+
+@dataclass
+class ProgramNode(AstNode):
+    statements: List[AstNode]
+
+    def children(self) -> List[AstNode]:
+        return self.statements
+
+
+@dataclass
 class SymbolInfo:
     name: str
     type_name: str
@@ -152,9 +197,13 @@ class SymbolTable:
                 return scope[name]
         return None
 
+    def lookup_current(self, name: str) -> Optional[SymbolInfo]:
+        return self.scopes[-1].get(name)
+
 
 class SemanticAnalyzer:
     REL_OPS = {">", "<", ">=", "<=", "==", "!="}
+    SUPPORTED_TYPES = {"Int", "String", "Bool", "Float"}
 
     def __init__(self, tokens: List["Token"], lang: str = "ru"):
         self.tokens = self._filter_tokens(tokens)
@@ -162,6 +211,7 @@ class SemanticAnalyzer:
         self.i = 0
         self.errors: List[SemanticErrorRecord] = []
         self.symbols = SymbolTable()
+        self._reported_condition_nodes: set[int] = set()
 
     @staticmethod
     def _filter_tokens(tokens: List["Token"]) -> List["Token"]:
@@ -186,6 +236,13 @@ class SemanticAnalyzer:
     def _match_keyword(self, value: str) -> bool:
         t = self._current()
         if t and t.token_type == "KEYWORD" and t.value == value:
+            self._advance()
+            return True
+        return False
+
+    def _match_word(self, value: str) -> bool:
+        t = self._current()
+        if t and t.value == value and t.token_type in ("KEYWORD", "IDENTIFIER"):
             self._advance()
             return True
         return False
@@ -235,6 +292,9 @@ class SemanticAnalyzer:
         if t.token_type == "INTEGER":
             self._advance()
             return IntLiteralNode(value=int(t.value), line=t.line, col=t.start)
+        if t.token_type == "KEYWORD" and t.value in ("True", "False"):
+            self._advance()
+            return BoolLiteralNode(value=t.value == "True", line=t.line, col=t.start)
         self._add_error(
             t,
             self._m("Ожидался идентификатор или целое число", "Expected identifier or integer"),
@@ -335,6 +395,115 @@ class SemanticAnalyzer:
             else_branch=else_assign,
         )
 
+    def _normalize_type_name(self, type_name: str) -> str:
+        lowered = type_name.lower()
+        if lowered in ("int", "int32"):
+            return "Int"
+        if lowered == "string":
+            return "String"
+        if lowered in ("bool", "boolean"):
+            return "Bool"
+        if lowered in ("float", "double"):
+            return "Float"
+        return type_name
+
+    def _parse_type_name(self) -> Optional[TypeNode]:
+        t = self._current()
+        if t is None or t.token_type not in ("IDENTIFIER", "KEYWORD"):
+            self._add_error(t, self._m("Ожидалось имя типа", "Expected type name"))
+            return None
+        self._advance()
+        normalized = self._normalize_type_name(t.value)
+        if normalized not in self.SUPPORTED_TYPES:
+            self.errors.append(
+                SemanticErrorRecord(
+                    fragment=t.value,
+                    line=t.line,
+                    col=t.start,
+                    message=self._m(
+                        f'Неподдерживаемый тип "{t.value}"',
+                        f'Unsupported type "{t.value}"',
+                    ),
+                )
+            )
+        return TypeNode(name=normalized)
+
+    def _parse_const_decl(self) -> Optional[ConstDeclNode]:
+        start = self._current()
+        has_const = self._match_word("const")
+        has_val = self._match_word("val")
+        if not has_const:
+            self._add_error(start, self._m("Ожидалось ключевое слово 'const'", "Expected keyword 'const'"))
+        if not has_val:
+            self._add_error(self._current(), self._m("Ожидалось ключевое слово 'val'", "Expected keyword 'val'"))
+
+        name_tok = self._current()
+        if name_tok is None or name_tok.token_type != "IDENTIFIER":
+            self._add_error(name_tok, self._m("Ожидалось имя идентификатора", "Expected identifier name"))
+            return None
+        self._advance()
+
+        self._expect_delimiter(":")
+        type_node = self._parse_type_name()
+        self._expect_operator("=")
+        value_node = self._parse_operand()
+        self._expect_delimiter(";")
+
+        if type_node is None or value_node is None:
+            return None
+        return ConstDeclNode(
+            name=name_tok.value,
+            modifiers=["const", "val"],
+            type_node=type_node,
+            value=value_node,
+            line=name_tok.line,
+            col=name_tok.start,
+        )
+
+    def _parse_const_program(self) -> ProgramNode:
+        statements: List[AstNode] = []
+        while self._current() is not None:
+            decl = self._parse_const_decl()
+            if decl is None:
+                break
+            if self._check_const_decl_semantics(decl):
+                statements.append(decl)
+        return ProgramNode(statements=statements)
+
+    def _check_const_decl_semantics(self, decl: ConstDeclNode) -> bool:
+        current = self.symbols.lookup_current(decl.name)
+        if current is not None:
+            self.errors.append(
+                SemanticErrorRecord(
+                    fragment=decl.name,
+                    line=decl.line,
+                    col=decl.col,
+                    message=self._m(
+                        f'Идентификатор "{decl.name}" уже объявлен ранее (строка {current.line})',
+                        f'Identifier "{decl.name}" is already declared earlier (line {current.line})',
+                    ),
+                )
+            )
+            return False
+
+        declared_type = decl.type_node.name
+        value_type = self._infer_expr_type(decl.value)
+        if value_type != "Unknown" and declared_type != value_type:
+            self.errors.append(
+                SemanticErrorRecord(
+                    fragment=decl.name,
+                    line=decl.line,
+                    col=decl.col,
+                    message=self._m(
+                        f'Несовместимость типов: "{decl.name}" имеет тип {declared_type}, получено {value_type}',
+                        f'Type mismatch: "{decl.name}" is {declared_type}, got {value_type}',
+                    ),
+                )
+            )
+
+        self.symbols.declare(SymbolInfo(name=decl.name, type_name=declared_type, line=decl.line, col=decl.col))
+        return True
+
     def _infer_expr_type(self, node: AstNode) -> str:
         if isinstance(node, IntLiteralNode):
             if node.value < INT_MIN or node.value > INT_MAX:
@@ -350,6 +519,8 @@ class SemanticAnalyzer:
                     )
                 )
             return "Int"
+        if isinstance(node, BoolLiteralNode):
+            return "Bool"
         if isinstance(node, IdentifierNode):
             symbol = self.symbols.lookup(node.name)
             if symbol is None:
@@ -392,17 +563,21 @@ class SemanticAnalyzer:
         if isinstance(node, LogicalBinaryNode):
             left_type = self._infer_condition_type(node.left)
             right_type = self._infer_condition_type(node.right)
-            if left_type != "Bool":
+            if left_type not in ("Bool", "Unknown"):
                 self._add_condition_type_error(node.left, node.operator)
-            if right_type != "Bool":
+            if right_type not in ("Bool", "Unknown"):
                 self._add_condition_type_error(node.right, node.operator)
-            return "Bool"
+            if left_type == "Bool" and right_type == "Bool":
+                return "Bool"
+            return "Unknown"
 
         if isinstance(node, NotNode):
             operand_type = self._infer_condition_type(node.operand)
-            if operand_type != "Bool":
+            if operand_type not in ("Bool", "Unknown"):
                 self._add_condition_type_error(node.operand, "not")
-            return "Bool"
+            if operand_type == "Bool":
+                return "Bool"
+            return "Unknown"
 
         inferred = self._infer_expr_type(node)
         if inferred != "Unknown":
@@ -433,6 +608,10 @@ class SemanticAnalyzer:
         return node.label()
 
     def _add_condition_type_error(self, node: AstNode, operator: str):
+        node_id = id(node)
+        if node_id in self._reported_condition_nodes:
+            return
+        self._reported_condition_nodes.add(node_id)
         self.errors.append(
             SemanticErrorRecord(
                 fragment=self._node_fragment(node),
@@ -450,6 +629,8 @@ class SemanticAnalyzer:
             return
         previous = self.symbols.lookup(assign.target.name)
         rhs_type = self._infer_expr_type(assign.value)
+        if previous is not None and rhs_type == "Unknown":
+            rhs_type = previous.type_name
         symbol = SymbolInfo(name=assign.target.name, type_name=rhs_type, line=assign.target.line, col=assign.target.col)
         if not self.symbols.declare(symbol):
             self.errors.append(
@@ -480,33 +661,35 @@ class SemanticAnalyzer:
     def analyze(self) -> SemanticAnalysisResult:
         self.i = 0
         self.errors = []
-        ast = self._parse_start()
+        self.symbols = SymbolTable()
+        self._reported_condition_nodes.clear()
+        ast: Optional[AstNode]
+        first = self._current()
+        if first and first.value in ("const", "val"):
+            ast = self._parse_const_program()
+        else:
+            ast = self._parse_start()
         ast_text = render_tree(ast) if ast is not None else "AST: <empty>"
         return SemanticAnalysisResult(ast_text=ast_text, ast_root=ast, errors=self.errors)
 
 
-def render_tree(node: Optional[AstNode], prefix: str = "", is_last: bool = True) -> str:
+def render_tree(node: Optional[AstNode]) -> str:
     if node is None:
         return "AST: <empty>"
 
-    lines: List[str] = []
-    branch = "└── " if is_last else "├── "
-    if prefix:
-        lines.append(f"{prefix}{branch}{node.label()}")
-    else:
-        lines.append(node.label())
+    lines: List[str] = [node.label()]
 
-    attrs = node.attributes()
-    children = node.children()
+    def _walk(current: AstNode, prefix: str):
+        entries: List[Union[str, AstNode]] = current.attributes() + current.children()
+        for idx, item in enumerate(entries):
+            is_last = idx == len(entries) - 1
+            branch = "└── " if is_last else "├── "
+            next_prefix = f"{prefix}{'    ' if is_last else '│   '}"
+            if isinstance(item, str):
+                lines.append(f"{prefix}{branch}{item}")
+            else:
+                lines.append(f"{prefix}{branch}{item.label()}")
+                _walk(item, next_prefix)
 
-    child_entries: List[Union[str, AstNode]] = attrs + children
-    for idx, item in enumerate(child_entries):
-        last_child = idx == len(child_entries) - 1
-        child_prefix = f"{prefix}{'    ' if is_last else '│   '}" if prefix else ""
-        if isinstance(item, str):
-            symbol = "└── " if last_child else "├── "
-            lines.append(f"{child_prefix}{symbol}{item}")
-        else:
-            nested = render_tree(item, child_prefix, last_child)
-            lines.append(nested)
+    _walk(node, "")
     return "\n".join(lines)

@@ -78,7 +78,10 @@ class Token:
 
 
 class Scanner:
-    KEYWORDS = {'if', 'else', 'elif', 'True', 'False', 'None', 'and', 'or', 'not', 'int', 'float', 'str', 'print'}
+    KEYWORDS = {
+        'if', 'else', 'elif', 'True', 'False', 'None', 'and', 'or', 'not', 'int', 'float', 'str', 'print',
+        'const', 'val', 'Int', 'String', 'Bool', 'Float'
+    }
 
     OPERATORS = {'=', '>', '<', '>=', '<=', '==', '!=', '+', '-', '*', '/', '%', '//', '**', '+=', '-=', '*=', '/='}
 
